@@ -26,6 +26,7 @@ import (
 	"github.com/pterodactyl/wings/config"
 	"github.com/pterodactyl/wings/environment"
 	"github.com/pterodactyl/wings/loggers/cli"
+	"github.com/pterodactyl/wings/server/backup/dedup"
 	"github.com/pterodactyl/wings/system"
 )
 
@@ -215,6 +216,24 @@ func writeConfiguration(w io.Writer) *config.Configuration {
 		fmt.Fprintln(w, "      Data Directory:", cfg.System.Data)
 		fmt.Fprintln(w, "   Archive Directory:", cfg.System.ArchiveDirectory)
 		fmt.Fprintln(w, "    Backup Directory:", cfg.System.BackupDirectory)
+		fmt.Fprintln(w, "       Backup Driver:", cfg.System.Backups.Driver, "(effective: " + cfg.System.Backups.EffectiveDriver() + ")")
+		if cfg.System.Backups.EffectiveDriver() == "dedup" {
+			fmt.Fprintln(w, "   Dedup Compression:", cfg.System.Backups.Dedup.Compression)
+			fmt.Fprintln(w, "     Dedup Size Mode:", cfg.System.Backups.Dedup.ReportSize)
+			fmt.Fprintln(w, "     Dedup Full Scan:", cfg.System.Backups.Dedup.FullScanEvery)
+			if cfg.System.Backups.Dedup.GCCron != "" {
+				fmt.Fprintln(w, "      Dedup GC Cron:", cfg.System.Backups.Dedup.GCCron)
+			}
+			if cfg.System.Backups.Dedup.VerifyCron != "" {
+				fmt.Fprintln(w, "  Dedup Verify Cron:", cfg.System.Backups.Dedup.VerifyCron)
+			}
+			if store, err := dedup.GetStore(cfg.System.BackupDirectory); err == nil {
+				if summary, err := store.Summary(context.Background()); err == nil && summary.IndexCount > 0 {
+					fmt.Fprintln(w, "        Dedup Ratio:", fmt.Sprintf("%.2fx (chunks: %d, disk: %s, logical: %s, saved: %.1f%%)",
+						summary.DedupRatio(), summary.ChunkCount, formatBytes(summary.TotalDiskSize), formatBytes(summary.TotalLogicalSize), summary.SpaceSavedPercent()))
+				}
+			}
+		}
 		fmt.Fprintln(w, "")
 		fmt.Fprintln(w, "            Username:", cfg.System.Username)
 		fmt.Fprintln(w, "         Server Time:", time.Now().Format(time.RFC1123Z))

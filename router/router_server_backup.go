@@ -58,7 +58,13 @@ func postServerBackup(c *gin.Context) {
 	var adapter backup.BackupInterface
 	switch data.Adapter {
 	case backup.LocalBackupAdapter:
-		adapter = backup.NewLocal(client, backupUuid, data.Ignore)
+		if config.Get().System.Backups.EffectiveDriver() == "dedup" {
+			adapter = backup.NewDedup(client, s.ID(), backupUuid, data.Ignore)
+		} else {
+			lb := backup.NewLocal(client, backupUuid, data.Ignore)
+			lb.ServerUuid = s.ID()
+			adapter = lb
+		}
 	case backup.S3BackupAdapter:
 		adapter = backup.NewS3(client, backupUuid, data.Ignore)
 	default:
@@ -135,7 +141,7 @@ func postServerRestoreBackup(c *gin.Context) {
 	// happen leaves the server's files as they are. If the truncate_directory flag
 	// is set, the files are deleted once the server has stopped.
 	if data.Adapter == backup.LocalBackupAdapter {
-		b, _, err := backup.LocateLocal(client, backupUuid)
+		b, _, err := backup.LocateLocalOrDedup(client, s.ID(), backupUuid)
 		if err != nil {
 			middleware.CaptureAndAbort(c, err)
 			return
@@ -218,7 +224,13 @@ func deleteServerBackup(c *gin.Context) {
 	if !ok {
 		return
 	}
-	b, _, err := backup.LocateLocal(middleware.ExtractApiClient(c), backupUuid)
+	serverID := c.Param("server")
+	if v, exists := c.Get("server"); exists {
+		if srv, ok := v.(*server.Server); ok {
+			serverID = srv.ID()
+		}
+	}
+	b, _, err := backup.LocateLocalOrDedup(middleware.ExtractApiClient(c), serverID, backupUuid)
 	if err != nil {
 		// Just return from the function at this point if the backup was not located.
 		if errors.Is(err, os.ErrNotExist) {

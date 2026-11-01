@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/apex/log"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
@@ -44,7 +45,7 @@ func getDownloadBackup(c *gin.Context) {
 	}
 
 	// Locate the backup on the local disk.
-	b, st, err := backup.LocateLocal(client, token.BackupUuid)
+	b, st, err := backup.LocateLocalOrDedup(client, token.ServerUuid, token.BackupUuid)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{
@@ -54,6 +55,19 @@ func getDownloadBackup(c *gin.Context) {
 		}
 
 		middleware.CaptureAndAbort(c, err)
+		return
+	}
+
+	if db, ok := b.(*backup.DedupBackup); ok {
+		c.Header("Content-Disposition", "attachment; filename="+strconv.Quote(db.Identifier()+".tar.gz"))
+		c.Header("Content-Type", "application/octet-stream")
+		if err := db.StreamArchive(c.Request.Context(), c.Writer); err != nil {
+			log.WithFields(log.Fields{
+				"server": token.ServerUuid,
+				"backup": token.BackupUuid,
+				"error":  err,
+			}).Error("router: failed streaming deduplicated backup download")
+		}
 		return
 	}
 

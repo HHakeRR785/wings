@@ -4,12 +4,14 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"emperror.dev/errors"
 	"github.com/apex/log"
 	"github.com/gin-gonic/gin"
 
+	"github.com/pterodactyl/wings/config"
 	"github.com/pterodactyl/wings/router/downloader"
 	"github.com/pterodactyl/wings/router/middleware"
 	"github.com/pterodactyl/wings/router/tokens"
@@ -233,6 +235,18 @@ func deleteServer(c *gin.Context) {
 		_ = fs.UnixFS().Close()
 		if err := os.RemoveAll(p); err != nil {
 			log.WithFields(log.Fields{"path": p, "error": err}).Warn("failed to remove server files during deletion process")
+		}
+
+		cfg := config.Get()
+		if cfg != nil && cfg.System.Backups.DeleteOnServerDelete && s.ID() != "" {
+			backupDir := filepath.Join(cfg.System.BackupDirectory, s.ID())
+			if filepath.Clean(backupDir) != filepath.Clean(cfg.System.BackupDirectory) {
+				if err := os.RemoveAll(backupDir); err != nil && !os.IsNotExist(err) {
+					log.WithFields(log.Fields{"server": s.ID(), "path": backupDir, "error": err}).Warn("failed to remove server backup directory during deletion process")
+				} else {
+					log.WithFields(log.Fields{"server": s.ID(), "path": backupDir}).Info("removed server backup directory following server deletion")
+				}
+			}
 		}
 	}(s)
 

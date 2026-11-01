@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 
 	"emperror.dev/errors"
 	"github.com/juju/ratelimit"
@@ -39,6 +40,21 @@ func LocateLocal(client remote.Client, uuid string) (*LocalBackup, os.FileInfo, 
 		return nil, nil, err
 	}
 	st, err := os.Stat(b.Path())
+	if err != nil && (errors.Is(err, os.ErrNotExist) || os.IsNotExist(err)) {
+		backupDir := config.Get().System.BackupDirectory
+		if entries, readErr := os.ReadDir(backupDir); readErr == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				subPath := filepath.Join(backupDir, entry.Name(), b.Identifier()+".tar.gz")
+				if sst, serr := os.Stat(subPath); serr == nil && !sst.IsDir() {
+					b.ServerUuid = entry.Name()
+					return b, sst, nil
+				}
+			}
+		}
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -72,6 +88,10 @@ func (b *LocalBackup) Generate(ctx context.Context, fsys *filesystem.Filesystem,
 	a := &filesystem.Archive{
 		Filesystem: fsys,
 		Ignore:     ignore,
+	}
+
+	if err := os.MkdirAll(filepath.Dir(b.Path()), 0o755); err != nil {
+		return nil, errors.WrapIf(err, "backup: failed to create destination directory")
 	}
 
 	b.log().WithField("path", b.Path()).Info("creating backup for server")

@@ -2,6 +2,7 @@ package cron
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"emperror.dev/errors"
@@ -68,6 +69,39 @@ func Scheduler(ctx context.Context, m *server.Manager) (*gocron.Scheduler, error
 			}
 		}
 	})
+
+	dedupCfg := config.Get().System.Backups.Dedup
+	if gcExpr := strings.TrimSpace(dedupCfg.GCCron); gcExpr != "" {
+		l.WithField("cron", "dedup_gc").WithField("schedule", gcExpr).Info("configured backup garbage collection cron")
+		gcJob := dedupGCCron{mu: system.NewAtomicBool(false)}
+		if _, err := s.Tag("dedup_gc").Cron(gcExpr).Do(func() {
+			if err := gcJob.Run(ctx); err != nil {
+				if errors.Is(err, ErrCronRunning) {
+					l.WithField("cron", "dedup_gc").Warn("dedup GC is already running, skipping...")
+				} else {
+					l.WithField("cron", "dedup_gc").WithField("error", err).Error("dedup GC failed to execute")
+				}
+			}
+		}); err != nil {
+			return nil, errors.Wrap(err, "cron: invalid dedup gc_cron expression")
+		}
+	}
+
+	if verifyExpr := strings.TrimSpace(dedupCfg.VerifyCron); verifyExpr != "" {
+		l.WithField("cron", "dedup_verify").WithField("schedule", verifyExpr).Info("configured backup integrity verification cron")
+		verifyJob := dedupVerifyCron{mu: system.NewAtomicBool(false)}
+		if _, err := s.Tag("dedup_verify").Cron(verifyExpr).Do(func() {
+			if err := verifyJob.Run(ctx); err != nil {
+				if errors.Is(err, ErrCronRunning) {
+					l.WithField("cron", "dedup_verify").Warn("dedup verification is already running, skipping...")
+				} else {
+					l.WithField("cron", "dedup_verify").WithField("error", err).Error("dedup verification failed")
+				}
+			}
+		}); err != nil {
+			return nil, errors.Wrap(err, "cron: invalid dedup verify_cron expression")
+		}
+	}
 
 	return s, nil
 }

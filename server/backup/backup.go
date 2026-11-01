@@ -76,6 +76,9 @@ type Backup struct {
 	// the panel instance.
 	Uuid string `json:"uuid"`
 
+	// ServerUuid is the UUID of the server that owns this backup (if known).
+	ServerUuid string `json:"server_uuid,omitempty"`
+
 	// An array of files to ignore when generating this backup. This should be
 	// compatible with a standard .gitignore structure.
 	Ignore string `json:"ignore"`
@@ -115,6 +118,11 @@ func (b *Backup) Path() string {
 	identifier, err := b.normalizedIdentifier()
 	if err != nil {
 		identifier = path.Base(b.Identifier())
+	}
+	if b.ServerUuid != "" {
+		if parsedServer, err := uuid.Parse(b.ServerUuid); err == nil {
+			return path.Join(config.Get().System.BackupDirectory, parsedServer.String(), identifier+".tar.gz")
+		}
 	}
 	return path.Join(config.Get().System.BackupDirectory, identifier+".tar.gz")
 }

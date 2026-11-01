@@ -91,6 +91,7 @@ func init() {
 	rootCommand.AddCommand(versionCommand)
 	rootCommand.AddCommand(configureCmd)
 	rootCommand.AddCommand(newDiagnosticsCommand())
+	rootCommand.AddCommand(newBackupCommand())
 }
 
 func rootCmdRun(cmd *cobra.Command, _ []string) {

@@ -101,9 +101,14 @@ func (s *Server) Backup(b backup.BackupInterface) error {
 		_ = b.Remove()
 
 		s.Log().WithField("error", notifyError).Info("failed to notify panel of successful backup state")
-		return err
+		return notifyError
 	} else {
 		s.Log().WithField("backup", b.Identifier()).Info("notified panel of successful backup state")
+	}
+
+	checksumType := ad.ChecksumType
+	if checksumType == "" {
+		checksumType = "sha1"
 	}
 
 	// Emit an event over the socket so we can update the backup in realtime on
@@ -112,7 +117,7 @@ func (s *Server) Backup(b backup.BackupInterface) error {
 		"uuid":          b.Identifier(),
 		"is_successful": true,
 		"checksum":      ad.Checksum,
-		"checksum_type": "sha1",
+		"checksum_type": checksumType,
 		"file_size":     ad.Size,
 	})
 

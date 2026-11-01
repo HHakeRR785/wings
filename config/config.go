@@ -22,6 +22,7 @@ import (
 	"github.com/apex/log"
 	"github.com/creasty/defaults"
 	"github.com/gbrlsnchs/jwt/v3"
+	"github.com/go-co-op/gocron"
 	"golang.org/x/sys/unix"
 	"gopkg.in/yaml.v2"
 
@@ -306,6 +307,108 @@ type Backups struct {
 	// RestoreHostAllowlist allows backup restore downloads to connect to otherwise blocked
 	// private/internal destinations. Entries may be hostnames, IP addresses, or CIDR ranges.
 	RestoreHostAllowlist []string `yaml:"restore_host_allowlist"`
+
+	// Driver selects the local backup storage engine ("tar" or "dedup").
+	// Defaults to "tar" for full backwards compatibility.
+	Driver string `default:"tar" yaml:"driver"`
+
+	// DeleteOnServerDelete controls whether deleting a server from Wings also deletes
+	// its local backup directory (/var/lib/pterodactyl/backups/<uuid>).
+	// Defaults to false to prevent accidental data loss.
+	DeleteOnServerDelete bool `default:"false" yaml:"delete_on_server_delete"`
+
+	// Dedup holds configuration options for the deduplicating backup driver.
+	Dedup DedupBackups `yaml:"dedup"`
+}
+
+type DedupBackups struct {
+	// Compression determines how newly stored chunks are compressed on disk.
+	// Supported values: "none", "zstd_fast", "zstd_better".
+	Compression string `default:"zstd_fast" yaml:"compression"`
+
+	// ReportSize controls what size (in bytes) is reported to the Panel for each backup.
+	// "incremental" reports actual new bytes written to disk; "logical" reports full uncompressed size.
+	ReportSize string `default:"incremental" yaml:"report_size"`
+
+	// FullScanEvery forces every N-th backup of a server to read and hash all file contents
+	// even when file size and mtime match the previous backup. Set to 0 to disable.
+	FullScanEvery int `default:"7" yaml:"full_scan_every"`
+
+	// GCCron is a standard 5-field cron expression for garbage collecting unreferenced chunks.
+	// Set to "" to disable scheduled garbage collection.
+	GCCron string `default:"0 4 * * *" yaml:"gc_cron"`
+
+	// VerifyCron is a standard 5-field cron expression for verifying the SHA-256 checksums of chunks.
+	// Set to "" to disable scheduled verification.
+	VerifyCron string `default:"" yaml:"verify_cron"`
+}
+
+// EffectiveDriver returns the normalized local backup driver ("tar" or "dedup").
+func (b Backups) EffectiveDriver() string {
+	if strings.TrimSpace(b.Driver) == "" {
+		return "tar"
+	}
+	return strings.ToLower(strings.TrimSpace(b.Driver))
+}
+
+// EffectiveCompression returns the normalized chunk compression mode.
+func (d DedupBackups) EffectiveCompression() string {
+	if strings.TrimSpace(d.Compression) == "" {
+		return "zstd_fast"
+	}
+	return strings.ToLower(strings.TrimSpace(d.Compression))
+}
+
+// EffectiveReportSize returns the normalized size reporting mode ("incremental" or "logical").
+func (d DedupBackups) EffectiveReportSize() string {
+	if strings.TrimSpace(d.ReportSize) == "" {
+		return "incremental"
+	}
+	return strings.ToLower(strings.TrimSpace(d.ReportSize))
+}
+
+// Validate checks backup configuration fields and returns a descriptive error if invalid.
+func (b Backups) Validate() error {
+	switch b.EffectiveDriver() {
+	case "tar", "dedup":
+	default:
+		return fmt.Errorf("config: invalid system.backups.driver %q: expected \"tar\" or \"dedup\"", b.Driver)
+	}
+
+	switch b.Dedup.EffectiveCompression() {
+	case "none", "zstd_fast", "zstd_better":
+	default:
+		return fmt.Errorf("config: invalid system.backups.dedup.compression %q: expected \"none\", \"zstd_fast\", or \"zstd_better\"", b.Dedup.Compression)
+	}
+
+	switch b.Dedup.EffectiveReportSize() {
+	case "incremental", "logical":
+	default:
+		return fmt.Errorf("config: invalid system.backups.dedup.report_size %q: expected \"incremental\" or \"logical\"", b.Dedup.ReportSize)
+	}
+
+	if b.Dedup.FullScanEvery < 0 {
+		return fmt.Errorf("config: invalid system.backups.dedup.full_scan_every %d: must be >= 0", b.Dedup.FullScanEvery)
+	}
+
+	validateCron := func(field, expr string) error {
+		expr = strings.TrimSpace(expr)
+		if expr == "" {
+			return nil
+		}
+		s := gocron.NewScheduler(time.UTC)
+		if _, err := s.Cron(expr).Do(func() {}); err != nil {
+			return fmt.Errorf("config: invalid %s cron expression %q: %w", field, expr, err)
+		}
+		return nil
+	}
+	if err := validateCron("system.backups.dedup.gc_cron", b.Dedup.GCCron); err != nil {
+		return err
+	}
+	if err := validateCron("system.backups.dedup.verify_cron", b.Dedup.VerifyCron); err != nil {
+		return err
+	}
+	return nil
 }
 
 type Transfers struct {
@@ -541,6 +644,10 @@ func SetDebugViaFlag(d bool) {
 // the callback.
 func Get() *Configuration {
 	mu.RLock()
+	if _config == nil {
+		mu.RUnlock()
+		return nil
+	}
 	// Create a copy of the struct so that all modifications made beyond this
 	// point are immutable.
 	//goland:noinspection GoVetCopyLock
@@ -707,6 +814,9 @@ func Load(path string) (*Configuration, error) {
 		return nil, err
 	}
 	if err := yaml.Unmarshal(b, c); err != nil {
+		return nil, err
+	}
+	if err := c.System.Backups.Validate(); err != nil {
 		return nil, err
 	}
 	return c, nil
